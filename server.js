@@ -19,13 +19,8 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const db = getDatabase();
 initSchema(db);
 
-// Garantit la présence des paramètres essentiels (sans écraser ceux déjà modifiés)
-{
-  const ensure = db.prepare('INSERT OR IGNORE INTO settings (key, value, description) VALUES (?, ?, ?)');
-  ensure.run('church_name', 'Mission Apostolique de Pentecôte (MAP) - Temple Ébénézer', 'Nom de l\'église');
-  ensure.run('report_warning_weeks', '3', 'Semaines sans rapport avant alerte');
-  ensure.run('absence_threshold', '3', 'Absences consécutives avant alerte');
-}
+// Données de base + sécurisation (production)
+require('./bootstrap').run(db);
 
 // Types MIME pour les fichiers statiques
 const MIME_TYPES = {
@@ -164,6 +159,24 @@ function serveStatic(req, res, pathname) {
 }
 
 // Création du serveur HTTP
+// Limitation des tentatives de connexion (10 échecs / 15 min par IP)
+const loginFailures = new Map();
+function realIp(req) {
+  const xff = req.headers['x-forwarded-for'];
+  return (xff ? xff.split(',')[0].trim() : req.socket.remoteAddress) || 'inconnu';
+}
+function isLoginBlocked(ip) {
+  const e = loginFailures.get(ip);
+  if (!e) return false;
+  if (Date.now() - e.first > 15 * 60 * 1000) { loginFailures.delete(ip); return false; }
+  return e.count >= 10;
+}
+function recordLoginFailure(ip) {
+  const e = loginFailures.get(ip);
+  if (!e || Date.now() - e.first > 15 * 60 * 1000) loginFailures.set(ip, { count: 1, first: Date.now() });
+  else e.count++;
+}
+
 const server = http.createServer(async (req, res) => {
   const parsedUrl = url.parse(req.url, true);
   const pathname = parsedUrl.pathname;
@@ -180,6 +193,12 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
 
+  // Sonde de santé pour l'hébergeur
+  if (pathname === '/healthz') {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    return res.end('ok');
+  }
+
   // Si ce n'est pas une requête API, servir le contenu statique
   if (!pathname.startsWith('/api/')) {
     return serveStatic(req, res, pathname);
@@ -187,7 +206,7 @@ const server = http.createServer(async (req, res) => {
 
   // Utilisateur connecté
   const currentUser = getAuthUser(req);
-  const clientIp = req.socket.remoteAddress || '127.0.0.1';
+  const clientIp = realIp(req);
 
   try {
     // -------------------------------------------------------------
@@ -198,9 +217,12 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/auth/login' && method === 'POST') {
       const { email, password } = await parseBody(req);
       if (!email || !password) return sendError(res, 400, 'Email et mot de passe requis');
+      const loginIp = realIp(req);
+      if (isLoginBlocked(loginIp)) return sendError(res, 429, 'Trop de tentatives. Réessayez dans 15 minutes.');
 
       const user = db.prepare('SELECT * FROM users WHERE email = ? AND is_active = 1').get(email);
       if (!user || !verifyPassword(password, user.password_hash, user.salt)) {
+        recordLoginFailure(loginIp);
         return sendError(res, 401, 'Identifiants invalides');
       }
 

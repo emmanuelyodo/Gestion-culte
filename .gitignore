@@ -1,0 +1,6 @@
+# Ne JAMAIS publier la base de données (données personnelles des membres)
+assemblee.db
+assemblee.db-shm
+assemblee.db-wal
+node_modules/
+.env

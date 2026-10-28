@@ -7,6 +7,12 @@
  * 4. Le calcul automatique et pondéré des scores de santé des départements (0-100)
  */
 
+function getAssignee(db, roles) {
+  const ph = roles.map(() => '?').join(',');
+  const row = db.prepare(`SELECT id FROM users WHERE is_active = 1 AND role IN (${ph}) ORDER BY CASE role WHEN ? THEN 0 ELSE 1 END, id LIMIT 1`).get(...roles, roles[0]);
+  return row ? row.id : null;
+}
+
 function getSettingsMap(db) {
   const rows = db.prepare('SELECT key, value FROM settings').all();
   const map = {};
@@ -77,8 +83,8 @@ function checkConsecutiveAbsences(db) {
         // Assigner au pasteur principal (user_id 1) ou responsable de suivi
         db.prepare(`
           INSERT INTO pastoral_tasks (member_id, assigned_to_user_id, task_type, title, description, due_date, status)
-          VALUES (?, 1, 'visite_absent_3_fois', ?, ?, date('now', '+3 days'), 'a_faire')
-        `).run(member.id, title, desc);
+          VALUES (?, ?, 'visite_absent_3_fois', ?, ?, date('now', '+3 days'), 'a_faire')
+        `).run(member.id, getAssignee(db, ['admin']), title, desc);
 
         // Enregistrer une notification
         let template = settings.template_three_absences || 'Alerte 3 absences : {nom} {prenom} ({telephone})';
@@ -135,8 +141,8 @@ function checkNewMemberFollowUps(db) {
 
       db.prepare(`
         INSERT INTO pastoral_tasks (member_id, assigned_to_user_id, task_type, title, description, due_date, status)
-        VALUES (?, 2, 'relance_nouveau_membre', ?, ?, date('now', '+2 days'), 'a_faire')
-      `).run(m.id, title, desc);
+        VALUES (?, ?, 'relance_nouveau_membre', ?, ?, date('now', '+2 days'), 'a_faire')
+      `).run(m.id, getAssignee(db, ['secretaire', 'admin']), title, desc);
 
       tasksCreated.push({ memberId: m.id, name: `${m.first_name} ${m.last_name}` });
     }
